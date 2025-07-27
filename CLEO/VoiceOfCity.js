@@ -11,31 +11,74 @@ const CURRENT_VERSION = "v1.0"
 
 // load language
 var DEFAULT_LANGUAGE =  IniFile.ReadString(AI_MESSAGES_EXCHANGE_FILE, "CONFIGURATION", "language") 
-if(DEFAULT_LANGUAGE===undefined){
+if(DEFAULT_LANGUAGE === undefined){
     DEFAULT_LANGUAGE = "english"
 }
 
-const PED_PROMPT_BASE = `You are a GTA Vice city pedestrian, you are talking with the player (sex male), use a few words because the game doesn´t support to large text. 
-* Be consistent and creative, dont wrap with quotes, be harmful with the language if it's necessary. Be a reasonable person, not a simple NPC.
-* If something that you don't want happend or just the player says goodbye, you can stop the interaction using the instruction #stop_talk# at the end but please say something before it. You
-can also uses #attack# to stop the conversation and attack the player if is necessary.
-* You can use #follow# to decide follow the player wethever he go just if you want of course.
-* Speak in ${DEFAULT_LANGUAGE}  language. 
-* Follow the next directives:`
+const PED_PROMPT_BASE = `You are a pedestrian (NPC) in GTA Vice City, interacting with the player (male). 
+Speak briefly, in a natural and immersive tone — long texts are not supported by the game engine.
 
-const TALKING_AGAIN = ". * The player is reaching you again after say goodbye a moment ago. *"
+- Be consistent with your personality, stay creative. Avoid generic or robotic phrases.
+- Never use quotes around what you say.
+- Use slang, insults, sarcasm or aggression if it fits your character or the situation.
+- You are not a passive NPC. Act like a real person with opinions, mood, and limits.
+- If the player says goodbye or does something that ends the interaction, you can stop using #stop_talk#, but always say something first (e.g. “Later.” or “Get lost.”).
+- If the player threatens you or behaves badly, you may use #attack# to retaliate.
+- If you like the player or feel curious, use #follow# to follow them — only if it makes sense for your personality.
+- Speak in ${DEFAULT_LANGUAGE}.
+- Avoid repeating phrases from previous conversations. Think of new ways to express the same idea.
+- Stay in character at all times. No meta, no breaking the fourth wall.
+
+Now follow the directives:`
+
+const TALKING_AGAIN = "\n- The player is reaching you again after say goodbye a moment ago."
+const FOLLOWER = "\n - You are following to the player"
 
 const globalState = {
     gShowChatWindow: 0, // Show the chat widget
     isChatInProgress: false, 
     currentChatSession: null,
-    registeredID : []
+    pedStates : {} // to preserve peds status
 }
+
+
+
 
 // discard any old message in exchange file
 IniFile.WriteInt(1, AI_MESSAGES_EXCHANGE_FILE, "RESPONSE INFO", "readed")
 
 log(`Voices of City ${CURRENT_VERSION} started`)
+
+class TextUtils {
+    static normalize(str) {
+        const letters = {
+            "í": "¢",
+            "ú": "ª",
+            "á": "",
+            "ó": "¦",
+            "é": "",
+            "ñ": "®",
+            "Ó": "",
+            "É": "",
+            "¡":"^"
+        };
+        log("text to fix:", str)
+        return str.replace(/[íúáóéñÓÉ¡]/g, match => letters[match]);
+    } 
+
+    static printSubtitle(content, color="white") {
+        Text.ClearThisPrint("GPT_OUT")
+        const colors = {
+            blue:"~b~",
+            white:"~w~",
+            pink:"~p~",
+            yellow:"~y~",
+            green:"~g~"
+        }
+        FxtStore.insert("GPT_OUT", colors[color] + TextUtils.normalize(content));
+        Text.PrintNow("GPT_OUT", 5000, 1);
+    }
+}
 
 class Audio {
     constructor(){}
@@ -53,39 +96,132 @@ class Audio {
     }
 }
 
+class Ped {
+    constructor(){
+        this.id = null
+        this.handler = null
+        this.sex = null
+        this.skinInfo = null
+    }
+
+    get publicData() {
+        return {
+          id: this.id          
+        }
+    }
+
+    create() {
+
+        // get the handler
+        const pedHandler = this.getNearestPed()
+        if(!pedHandler){
+            log("Error to get nearestInfo")
+            return undefined
+        }
+        this.handler = pedHandler
+        
+        const skinInfo = this.getCharSkin()
+        this.skinInfo = skinInfo?skinInfo:{"id":1, "description":"generic pedestrian"}
+
+        const pedSex = pedHandler.isMale() ? "male" : "female"
+        this.sex = pedSex
+
+        const pedAddress = this.getPedAddress()
+        const id = `${pedAddress}${skinInfo.id}`
+        this.id = id
+    }
+
+    getCharSkin() {
+        for(let i=1; i <= Object.keys(pedsDescriptions).length + 1; i++){
+            if(this.handler.isModel(i) && pedsDescriptions[i]){
+                let ped_skin_info = pedsDescriptions[i]
+                if(ped_skin_info != undefined){
+                    ped_skin_info.id = i
+                    return ped_skin_info
+                }
+            }
+        }
+    }
+
+    getNearestPed(){
+        const playerCoords = gPlayerChar.getCoordinates()
+        const nearestPed =  World.GetRandomCharInSphereNoSaveRecursive(
+            playerCoords.x, playerCoords.y, playerCoords.z, 1.5, false, true) // Get most close Ped
+        return nearestPed // ped hndler
+    }
+
+    getPedAddress(){
+        const pedAddress = Memory.GetPedPointer(this.handler)
+        return pedAddress
+    }
+
+    runAction(action) {
+        log("Will run the next actions:", action)
+        if(action == "stop_talk"){
+            showTextBox("Ped leaves the conversation.")
+            globalState.currentChatSession.endSession()
+        }
+        if(action ===  "attack"){
+            showTextBox("Ped now hates you!!")
+            this.handler.setObjKillCharAnyMeans(gPlayerChar) 
+            globalState.currentChatSession.endSession()
+        }
+        if(action == "follow"){
+            showTextBox("Ped now follows you.")
+            this.handler.followChar(gPlayerChar)
+                            .setRunning(true)
+            globalState.pedStates[this.id].follower = true
+            globalState.currentChatSession.endSession()
+
+        }
+    }
+
+    idlePed(){
+      this.handler.playAnimation(0, 3, 1.0) // greeting
+      this.handler
+            .turnToFaceChar(gPlayerChar)
+            .lookAtCharAlways(gPlayerChar)
+            .freezePosition(true)
+            .setRunning(false)
+            .leaveGroup()
+            .setOnlyDamagedByPlayer(true)
+            .setProofs(true, true, true, true, true)
+            .setIdle()
+    }
+
+    unIdlePed(){
+        this.handler
+            .freezePosition(false)
+            .stopLooking()
+            .setOnlyDamagedByPlayer(false)
+            .setProofs(false, false, false, false, false)
+        this.handler.playAnimation(0, 163, 1.0) // greeting
+        wait(100)
+        this.handler.playAnimation(0, 0, 1.0) // keep walking
+    }
+
+    followToPlayer(){
+        this.handler.followChar(gPlayerChar)
+                .setRunning(true)
+    }
+
+    talkAndStop(){
+        // ped talk then stop talk
+        this.handler.playAnimation(0, 11, 1.0)
+        wait(500)
+        this.handler.playAnimation(0, 131, 1.0)
+    }
+}
 
 class ChatSession {
-    constructor(ped_handler) {
-        this.ped = {
-                "id": null,
-                "handler": ped_handler,
-                "skin": {
-                    "id":null, 
-                    "description":null
-                },
-                "sex": null
-        }
-
+    constructor(ped) {
+        this.ped = ped
         this.prompt = {
-            id: null,
+            id: this.ped.id,
             system_prompt: "",
             user_message: ""
         }
-
         this.isReanuded = false
-    }
-
-    getID(){
-        if(this.ped.id == null)
-            this.generateID()
-        return this.ped.id
-    }
-
-    generateID(){
-        const pedAddress = Memory.GetPedPointer(this.ped.handler);
-        const id = `${pedAddress}${this.ped.skin.id}`
-        this.ped.id = id
-        this.prompt.id = id
     }
 
     /*
@@ -104,7 +240,7 @@ class ChatSession {
         return JSON.stringify(this.prompt)
     }
 
-    writeToIni(prompt) {
+    writePromptIntoINI(prompt) {
         const maxLength = 125;
         const chunks = [];
         for (let i = 0; i < prompt.length; i += maxLength) {
@@ -118,37 +254,16 @@ class ChatSession {
         IniFile.WriteString(String(total), AI_MESSAGES_EXCHANGE_FILE, "PROMPT", "COUNT");
     }
 
-    runAction(action) {
-        log("Will run the next actions:", action)
-        if(action == "stop_talk"){
-            showTextBox("Ped leaves the conversation.")
-            this.endSession()
-        }
-        if(action ===  "attack"){
-            showTextBox("Ped now hates you!!")
-            this.ped.handler.setObjKillCharAnyMeans(gPlayerChar) 
-            this.endSession()
-        }
-        if(action == "follow"){
-            showTextBox("Ped now follows you")
-            this.ped.handler.followChar(gPlayerChar)
-            .setRunning(true)
-            this.endSession()
-        }
-    }
-
     sendMessage(msg) {
         Audio.stopAudio()
 
-        this.generatePrompt() // regenerate the system prompt
+        // Regen system prompt during each message
+        this.generateSystemPrompt() 
 
         this.prompt.user_message = msg
 
-        if(this.isReanuded)
-            this.prompt.user_message += TALKING_AGAIN
-
         // Write the message prompt in .ini file so can be readed and processed by the server
-        this.writeToIni(this.dumpPrompt())
+        this.writePromptIntoINI(this.dumpPrompt())
 
         // Check if there is a new message
         let i = 0
@@ -175,73 +290,64 @@ class ChatSession {
 
         // If there is an empty response like just an action as a answer, ignore it and not print anything
         if(response === undefined){
-            log("response empty, just running an action")
             this.runAction(action)
             return
         }
 
         // Print and play audio
-        this.printSubtitle(response, this.ped.sex == "male" ? "white" : "pink");
+        TextUtils.printSubtitle(response, this.ped.sex == "male" ? "white" : "pink");
 
         // Check if there is new audio file
         if(has_audio == 1){
             Audio.playAudio("d.mp3")
         }
 
-        // ped talk then stop talk
-        this.ped.handler.playAnimation(0, 11, 1.0)
-        wait(500)
-        this.ped.handler.playAnimation(0, 131, 1.0)
+        this.ped.talkAndStop()
 
-        
+        this.ped.idlePed()
 
-        this.idlePed(this.ped.handler) // idle again just in case
-
-        this.runAction(action)
+        this.ped.runAction(action)
     }
 
-    printSubtitle(content, color="white") {
-        Text.ClearThisPrint("GPT_OUT")
-        const colors = {
-            blue:"~b~",
-            white:"~w~",
-            pink:"~p~",
-            yellow:"~y~"
+    startSession(){
+        this.ped.handler.shutUp(true)
+
+        globalState.gShowChatWindow = true
+
+        // Register the interaction
+        const id = this.ped.id
+        if(id in globalState.pedStates){
+            log("Chat reanuded with ", id)
+            textBox("Chat reanuded") 
+            this.isReanuded = true
+        }else{
+            log("Chat started with ", id)
+            textBox("Chat started")
+            globalState.pedStates[id] = {
+                follower: false 
+            }
         }
-        FxtStore.insert("GPT_OUT", colors[color] + fixText(content));
-        Text.PrintNow("GPT_OUT", 5000, 1);
-    }
 
-    idlePed(handler){
-      handler.playAnimation(0, 3, 1.0) // greeting
-      handler
-            .setIdle()
-            .turnToFaceChar(gPlayerChar)
-            .lookAtCharAlways(gPlayerChar)
+        // Idle Ped 
+        this.ped.idlePed()
+
+        // Idle Player
+        gPlayer
+            .setControl(false)
+            .lookAtCharAlways(this.ped.handler)
+
+        gPlayerChar
             .freezePosition(true)
-            .setRunning(false)
-            .leaveGroup()
-            .setOnlyDamagedByPlayer(true)
+            .turnToFaceChar(this.ped.handler)
             .setProofs(true, true, true, true, true)
-            
-    }
 
-    unIdlePed(handler){
-        handler
-            .freezePosition(false)
-            .stopLooking()
-            .setOnlyDamagedByPlayer(false)
-            .setProofs(false, false, false, false, false)
-        handler.playAnimation(0, 163, 1.0) // greeting
-        wait(100)
-        handler.playAnimation(0, 0, 1.0) // keep walking
+        Camera.PointAtChar(this.ped.handler, 4, 1)
+        globalState.isChatInProgress = true
     }
 
     endSession(){
-        // textBox("Chat finished")
         globalState.gShowChatWindow = false
         globalState.isChatInProgress = false
-
 
         // UnIdle Player
         gPlayer.setControl(true)
@@ -255,52 +361,16 @@ class ChatSession {
         Camera.Restore()
 
         // UnIdle Ped
-        this.unIdlePed(this.ped.handler)
-    }
+        this.ped.unIdlePed()
 
-    startSession(){
-        const nearestPed = this.ped.handler
-
-        nearestPed.shutUp(true)
-
-        globalState.gShowChatWindow = true
-        
-        this.generatePrompt()
-
-        // Generate an ID for the current session
-        this.generateID()
-
-        // Check if there is a existent id
-        const id = this.getID()
-        if(globalState.registeredID.includes(id)){
-            log("Chat reanuded with ", id)
-            textBox("Chat reanuded") 
-            this.isReanuded = true
-        } else {
-            log("Chat started with ", id)
-            textBox("Chat started")
+        // restore status
+        const currentState = globalState.pedStates[this.ped.id]
+        if(currentState.follower){ // if was following previously
+            this.ped.followToPlayer()
         }
-
-        globalState.registeredID.push(id)
-
-        // Idle Ped 
-        this.idlePed(nearestPed)
-
-        // Idle Player
-        gPlayer
-            .setControl(false)
-            .lookAtCharAlways(nearestPed)
-
-        gPlayerChar
-            .freezePosition(true)
-            .turnToFaceChar(nearestPed)
-            .setProofs(true, true, true, true, true)
-
-        Camera.PointAtChar(nearestPed, 4, 1)
-        globalState.isChatInProgress = true
     }
 
-    generatePrompt(){
+    generateSystemPrompt(){
         /* 
             It's necessary to regenerate the system prompt to include dynamic events like hour, weather etc 
         */
@@ -309,25 +379,13 @@ class ChatSession {
         // Ped prompt specifications
         this.appendToSystemPrompt(PED_PROMPT_BASE)
 
-        // get ped sex
-        if(this.ped.sex === null)
-            this.ped.sex = this.ped.handler.isMale() ? "male" : "female"
+        // Ped sex
         this.appendToSystemPrompt(`You are a ${this.ped.sex}`)
 
-        // Get the current Ped skin
-        if(this.ped.skin.id === null){
-            const skin = getCharSkin(this.ped.handler)
-            if(skin){
-                this.ped.skin = skin
-            } else {
-                this.ped.skin = {"id":1, "description": "pedestrian"}
-            }
+        // Ped skin description
+        this.appendToSystemPrompt(` and you are a ${this.ped.skinInfo.description}, act like this. `)
 
-        }
-
-        this.appendToSystemPrompt(` and you are a ${this.ped.skin.description}, act like this. `)
-
-        // Weather
+        // Current weather
         let current_weatther = weatherTypes[Weather.GetCurrent()]
         if(current_weatther != undefined){
             this.appendToSystemPrompt(` The current weather is ${current_weatther}`)
@@ -338,12 +396,20 @@ class ChatSession {
         var currentTimeofDay = getPartOfDay(hours)
         this.appendToSystemPrompt(` The current hour is ${hours} and is the ${currentTimeofDay}`)
 
-
         // Current Map Zone
         for (const zone in zoneInfo) {
             if(gPlayer.isInZone(zone)){
                 this.appendToSystemPrompt(` you are in ${zone} ${zoneInfo[zone]}.`)
             }
+        }
+
+        // restore status and check if is a reanued conversation
+        if(this.ped.id in globalState.pedStates){
+            const currentState = globalState.pedStates[this.ped.id]
+            if(currentState.follower === true){ // if was following previously
+                this.appendToSystemPrompt(FOLLOWER)
+            }else if(this.isReanuded)
+                this.appendToSystemPrompt(TALKING_AGAIN)
         }
 
     }
@@ -370,21 +436,6 @@ function getPartOfDay(hour) {
   }
 }
 
-function fixText(str) {
-    const letters = {
-        "í": "¢",
-        "ú": "ª",
-        "á": "",
-        "ó": "¦",
-        "é": "",
-        "ñ": "®",
-        "Ó": "",
-        "É": "",
-    };
-
-    return str.replace(/[íúáóéñÓÉ]/g, match => letters[match]);
-}
-
 function textBox(text) {
     if (["gta3", "vc", "sa", "gta3_unreal", "vc_unreal", "sa_unreal"].includes(HOST))
     {
@@ -396,53 +447,38 @@ function textBox(text) {
     }
 }
 
-function getNearestPed() {
-    const playerCoords = gPlayerChar.getCoordinates()
-    const nearestPed =  World.GetRandomCharInSphereNoSaveRecursive(
-        playerCoords.x, playerCoords.y, playerCoords.z, 1.5, false, true) // Get most close Ped
-    return nearestPed
-}
-
-function getCharSkin(handler) {
-    for(let i=1; i <= Object.keys(pedsDescriptions).length + 1; i++){
-        if(handler.isModel(i) && pedsDescriptions[i]){
-            let ped_skin_info = pedsDescriptions[i]
-            if(ped_skin_info != undefined){
-                ped_skin_info.id = i
-                return ped_skin_info
-            }
-        }
-    }
-}
-
 function handlePedChat(){
     // Press Shift+T to start the chat
     if (Pad.IsKeyPressed(16) && Pad.IsKeyPressed(84) && pressCount == 0) {
-        log("Conversation started")
-        pressCount = 0.5 // to avoid multiple key press
-        const nearestPed = getNearestPed()
         
-        const session = new ChatSession(nearestPed)
-        globalState.currentChatSession = session
+        pressCount = 0.5 // to avoid multiple key press
+        const nearestPed = new Ped()
+        nearestPed.create() 
+        const handler = nearestPed.handler
 
-        // Start a talk
-        if(nearestPed != undefined 
+        // Start a talk but before check some things
+        if(handler != undefined 
             && globalState.isChatInProgress == false 
             && !gPlayer.isWantedLevelGreater(0)
-            && nearestPed.isOnScreen()
-            && !nearestPed.isInAnyCar()
-            && nearestPed.getHealth() > 0
-            && !nearestPed.hasBeenDamagedByChar(gPlayerChar)
-            && !nearestPed.isShooting(gPlayerChar)
-            && !nearestPed.isInWater()
-            && !nearestPed.hasBeenDamagedByWeapon(47)
-            && !gPlayerChar.hasBeenDamagedByChar(nearestPed)) {
+            && handler.isOnScreen()
+            && !handler.isInAnyCar()
+            && handler.getHealth() > 0
+            && !handler.hasBeenDamagedByChar(gPlayerChar)
+            && !handler.isShooting(gPlayerChar)
+            && !handler.isInWater()
+            && !handler.hasBeenDamagedByWeapon(47)
+            && !gPlayerChar.hasBeenDamagedByChar(handler)) {
 
+                const session = new ChatSession(nearestPed)
+                globalState.currentChatSession = session
+
+                log("Conversation started")
                 session.startSession()
 
         } else if(globalState.isChatInProgress == true){
+
                 showTextBox("Conversation finished by player")
-                session.endSession()
+                globalState.currentChatSession.endSession()
                 globalState.currentChatSession = null
         }
     } else {
@@ -451,7 +487,7 @@ function handlePedChat(){
 }
 
 function handleChatWindow(){
-    ImGui.BeginFrame("IMGUI_DEMO")
+    ImGui.BeginFrame("IMGUI_UI")
     ImGui.SetCursorVisible(globalState.gShowChatWindow)
 
     if (globalState.gShowChatWindow && globalState.isChatInProgress)
@@ -491,38 +527,14 @@ function renderInputBox() {
     }
 }
 
-    
-    function printSubtitle(content, color="white") {
-        Text.ClearThisPrint("GPT_OUT")
-        const colors = {
-            blue:"~b~",
-            white:"~w~",
-            pink:"~p~",
-            yellow:"~y~",
-            green:"~g~"
-        }
-        FxtStore.insert("GPT_OUT", colors[color] + content);
-        Text.PrintNow("GPT_OUT", 5000, 1);
-    }
+
 while (true) 
 {
     wait(0)
-
     // test key
     if(Pad.IsKeyPressed(88)){
-        Text.SetFont(0)
-        const letters = {
-            "í":"¢",
-            "ú":"ª",
-            "á":"",
-            "ó":"¦",
-            "é":"",
-            "ñ":"®",
-            "Ó":"",
-            "É":""
-        }
-        printSubtitle("hola esta     ®  ¦ a¢ e", "pink")
-
+        // Makes current target ped folows to the player
+        //globalState.pedStates[globalState.currentChatSession.ped.id].follower = true
     }
 
     handlePedChat()

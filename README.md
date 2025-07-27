@@ -4,7 +4,7 @@
 ![Texto alternativo](logo.jpg)
 
 This is a mod to interact with peds in game using Generative AI. 
-The NPCs are aware of the current weather, time, location, and their own skin attributes, which are used to assign a personality based on their appearance. They can remember conversations (until they disappear due to game limitations), support voice audio generation, and perform actions based on the conversation — such as deciding to leave or even attack the player.
+The NPCs are aware of the current weather, time, location, and their own skin attributes, which are used to assign a personality based on their appearance. They can remember conversations (until they disappear due to game limitations), support voice audio generation, and perform actions based on the conversation — such as deciding to leav, attack the player or even follow it.
 
 #### Requirements
 - Python 3.5+
