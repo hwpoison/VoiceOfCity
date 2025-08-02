@@ -211,3 +211,25 @@ export const weatherTypes = {
     "5": "Hurricane",
     "6": "ExtraColours"
 }
+
+// Get day status depending in-game hour time.
+export const helperFunctions = {
+    getPartOfDay:function(hour){
+      if (hour >= 5 && hour < 12) {
+        return "morning";
+      } else if (hour >= 12 && hour < 17) {
+        return "afternoon";
+      } else if (hour >= 17 && hour < 21) {
+        return "evening";
+      } else {
+        return "night";
+      }
+    },
+    genRandomID:function(){
+      const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      let hash = '';
+      for (let i = 0; i < 8; i++)
+        hash += chars.charAt(Math.floor(Math.random() * chars.length));
+      return hash;
+    }
+}

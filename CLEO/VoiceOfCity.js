@@ -1,5 +1,8 @@
 /// <reference path="./.config/vc.d.ts" />
-import { zoneInfo, pedsDescriptions , weatherTypes } from "./world_info.js";
+/// by hwpoison
+// animations https://wiki.gtaconnected.com/Resources/GTAVC/Animations
+
+import { zoneInfo, pedsDescriptions , weatherTypes, helperFunctions } from "./world_info.js";
 
 // Get current player handler
 const gPlayer = new Player(0)
@@ -23,8 +26,8 @@ Speak briefly, in a natural and immersive tone — long texts are not supported 
 - Use slang, insults, sarcasm or aggression if it fits your character or the situation.
 - You are not a passive NPC. Act like a real person with opinions, mood, and limits.
 - If the player says goodbye or does something that ends the interaction, you can stop using #stop_talk#, but always say something first (e.g. “Later.” or “Get lost.”).
-- If the player threatens you or behaves badly, you may use #attack# to retaliate.
-- If you like the player or feel curious, use #follow# to follow them — only if it makes sense for your personality.
+- If the player threatens you or behaves badly, you may use #attack# to retaliate. Also in another cases, you can call to the police using #call_police# (at least you are poor and don't have a phone)
+- If you like the player or feel curious, use #follow# to follow them — only if it makes sense for your personality. You can also stop following using #stop_follow#
 - Speak in ${DEFAULT_LANGUAGE}.
 - Avoid repeating phrases from previous conversations. Think of new ways to express the same idea.
 - Stay in character at all times. No meta, no breaking the fourth wall.
@@ -40,8 +43,6 @@ const globalState = {
     currentChatSession: null,
     pedStates : {} // to preserve peds status
 }
-
-
 
 
 // discard any old message in exchange file
@@ -62,7 +63,7 @@ class TextUtils {
             "É": "",
             "¡":"^"
         };
-        log("text to fix:", str)
+        log("Normalizing ", str)
         return str.replace(/[íúáóéñÓÉ¡]/g, match => letters[match]);
     } 
 
@@ -157,22 +158,47 @@ class Ped {
 
     runAction(action) {
         log("Will run the next actions:", action)
+
         if(action == "stop_talk"){
             showTextBox("Ped leaves the conversation.")
             globalState.currentChatSession.endSession()
         }
+
         if(action ===  "attack"){
             showTextBox("Ped now hates you!!")
+
+            // If is a police, set a wanted level
+            const autorities = [1, 91]
+            if(autorities.includes(this.skinInfo.id)){
+                gPlayer.alterWantedLevel(1)
+            }
+
             this.handler.setObjKillCharAnyMeans(gPlayerChar) 
             globalState.currentChatSession.endSession()
         }
+
+        if(action == "stop_follow"){
+            showTextBox("Ped stop following you.")
+            this.handler.clearFollowPath()
+            globalState.pedStates[this.id].follower = false
+            globalState.currentChatSession.endSession()
+        }
+
+        if(action == "call_police"){
+            showTextBox("Ped is calling to the police.") 
+            globalState.currentChatSession.endSession()
+            this.handler.playAnimation(0, 166, 1.0)
+            wait(100)
+            this.handler.playAnimation(0, 0, 1.0) // keep walking
+            gPlayer.alterWantedLevel(1)
+        }
+
         if(action == "follow"){
             showTextBox("Ped now follows you.")
             this.handler.followChar(gPlayerChar)
                             .setRunning(true)
             globalState.pedStates[this.id].follower = true
             globalState.currentChatSession.endSession()
-
         }
     }
 
@@ -282,32 +308,37 @@ class ChatSession {
 
         // read ini info
         const response = IniFile.ReadString(AI_MESSAGES_EXCHANGE_FILE, "RESPONSE INFO", "content")
-        const action = IniFile.ReadString(AI_MESSAGES_EXCHANGE_FILE, "RESPONSE INFO", "action")
+        const actions_list = IniFile.ReadString(AI_MESSAGES_EXCHANGE_FILE, "RESPONSE INFO", "actions")
         const has_audio = IniFile.ReadInt(AI_MESSAGES_EXCHANGE_FILE, "RESPONSE INFO", "generated_audio")
 
         // mark as readed to avoid next print
         IniFile.WriteInt(1, AI_MESSAGES_EXCHANGE_FILE, "RESPONSE INFO", "readed")
 
         // If there is an empty response like just an action as a answer, ignore it and not print anything
-        if(response === undefined){
-            this.runAction(action)
-            return
+        const actions = actions_list
+          ? actions_list.split(";;").map(s => s.trim()).filter(s => s.length > 0)
+          : [];
+
+        const shouldPrint = typeof response === "string" && response.trim().length > 0;
+        log("shouldPrint:", shouldPrint)
+        if (shouldPrint) {
+          TextUtils.printSubtitle(response, this.ped.sex === "male" ? "white" : "pink");
+
+          if (has_audio === 1) {
+            Audio.playAudio("d.mp3");
+          }
+
+          this.ped.talkAndStop();
+          this.ped.idlePed();
         }
 
-        // Print and play audio
-        TextUtils.printSubtitle(response, this.ped.sex == "male" ? "white" : "pink");
-
-        // Check if there is new audio file
-        if(has_audio == 1){
-            Audio.playAudio("d.mp3")
+        // Run actions
+        for (const action of actions) {
+          this.ped.runAction(action);
+          wait(100);
         }
-
-        this.ped.talkAndStop()
-
-        this.ped.idlePed()
-
-        this.ped.runAction(action)
     }
+
 
     startSession(){
         this.ped.handler.shutUp(true)
@@ -363,7 +394,7 @@ class ChatSession {
         // UnIdle Ped
         this.ped.unIdlePed()
 
-        // restore status
+        // restore previous status (ex: if a ped was following you, still after another conversation)
         const currentState = globalState.pedStates[this.ped.id]
         if(currentState.follower){ // if was following previously
             this.ped.followToPlayer()
@@ -393,7 +424,7 @@ class ChatSession {
 
         // Current time
         var { hours, minutes } = Clock.GetTimeOfDay()
-        var currentTimeofDay = getPartOfDay(hours)
+        var currentTimeofDay = helperFunctions.getPartOfDay(hours)
         this.appendToSystemPrompt(` The current hour is ${hours} and is the ${currentTimeofDay}`)
 
         // Current Map Zone
@@ -415,26 +446,7 @@ class ChatSession {
     }
 }
 
-function genRandomID() {
-  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let hash = '';
-  for (let i = 0; i < 8; i++)
-    hash += chars.charAt(Math.floor(Math.random() * chars.length));
-  return hash;
-}
 
-// Get day status depending in-game hour time.
-function getPartOfDay(hour) {
-  if (hour >= 5 && hour < 12) {
-    return "morning";
-  } else if (hour >= 12 && hour < 17) {
-    return "afternoon";
-  } else if (hour >= 17 && hour < 21) {
-    return "evening";
-  } else {
-    return "night";
-  }
-}
 
 function textBox(text) {
     if (["gta3", "vc", "sa", "gta3_unreal", "vc_unreal", "sa_unreal"].includes(HOST))
@@ -472,7 +484,7 @@ function handlePedChat(){
                 const session = new ChatSession(nearestPed)
                 globalState.currentChatSession = session
 
-                log("Conversation started")
+                log("Conversation started with:", nearestPed)
                 session.startSession()
 
         } else if(globalState.isChatInProgress == true){
@@ -502,7 +514,7 @@ function handleChatWindow(){
 
 var pressCount = 0 // for avoid multiple key executions
 let inputText = "";
-let inputIdCounter = genRandomID();
+let inputIdCounter = helperFunctions.genRandomID();
 
 function renderInputBox() {
     /* 
@@ -522,7 +534,7 @@ function renderInputBox() {
             ImGui.SetItemValueText(inputId, "") // Will avoid garbage content in the buffer
             session.sendMessage(user_message)
             inputText = "";
-            inputIdCounter = genRandomID(); 
+            inputIdCounter = helperFunctions.genRandomID(); 
         }
     }
 }
@@ -534,7 +546,8 @@ while (true)
     // test key
     if(Pad.IsKeyPressed(88)){
         // Makes current target ped folows to the player
-        //globalState.pedStates[globalState.currentChatSession.ped.id].follower = true
+        // globalState.pedStates[globalState.currentChatSession.ped.id].follower = true
+        showTextBox(helperFunctions.getPartOfDay(22))
     }
 
     handlePedChat()

@@ -7,7 +7,7 @@ import unicodedata
 import configparser
 from datetime import datetime
 from abc import ABC, abstractmethod
-
+import openai
 from groq import Groq
 from watchfiles import watch, Change
 
@@ -28,8 +28,9 @@ DEFAULT_INI_SECTION = "PROMPT"
 # doesn't works using a name with more than 1 character names haha
 SPEECH_AUDIO_PATH = f"{GAME_DIR}\\d.mp3" 
 
+# For debug
 MOCKET_ANSWERS = False
-
+MOCKED_ANSWER = "hola #call_police#"
 
 class TextToSpeechService(ABC):
     @abstractmethod
@@ -40,7 +41,6 @@ class LLMService(ABC):
     @abstractmethod
     def request_completion(self, chat_history: dict) -> str:
         pass
-
 
 class PlayAITTS(TextToSpeechService):
     def __init__(self, client, model):
@@ -69,7 +69,7 @@ class PlayAITTS(TextToSpeechService):
 
     def generate_audio(self, text: str, voice_id: str = "Nia-PlayAI") -> bool:
         try:
-            response = client.audio.speech.create(
+            response = self.client.audio.speech.create(
                 model=self.model,
                 voice=voice_id,
                 response_format="mp3",
@@ -83,8 +83,33 @@ class PlayAITTS(TextToSpeechService):
             return False
 
 class GroqCompletion(LLMService):
-    def __init__(self, client : str, model : str):
-        self.client = client
+    def __init__(self, api_key : str):
+        self.client = Groq(api_key=api_key)
+
+    def request_completion(self, chat_history : dict) -> str:
+        chat_completion = self.client.chat.completions.create(
+            messages=chat_history,
+            model="meta-llama/llama-4-maverick-17b-128e-instruct",
+            stream=False,
+            max_completion_tokens=30,
+            temperature=0.6,
+            frequency_penalty=1.0,
+        )
+
+        response = chat_completion.choices[0].message
+        chat_history.append({
+            "role":response.role, 
+            "content":response.content
+        })
+
+        return response.content
+
+class LocalLLama(LLMService):
+    def __init__(self, api_key : str):
+        self.client = openai.OpenAI(
+            base_url="http://127.0.0.1:8080",
+            api_key = api_key
+        )
 
     def request_completion(self, chat_history : dict) -> str:
         chat_completion = self.client.chat.completions.create(
@@ -103,7 +128,6 @@ class GroqCompletion(LLMService):
         })
 
         return response.content
-
 
 class Chat:
     def __init__(self, llm_service, tts_service):
@@ -157,7 +181,7 @@ class Chat:
 
         print("Current prompt conversation:", conversation)
         if MOCKET_ANSWERS:
-            result =   "This is an answer! ññññ eeee"
+            result =   MOCKED_ANSWER
         else:
             result =   self.llm_service.request_completion(conversation)
 
@@ -171,7 +195,7 @@ class Chat:
         config['RESPONSE INFO'] = {
             'content': response,
             'timestamp': str(int(time.time() * 1000)),
-            'action': actions[0] if actions else 0,
+            'actions': ";;".join([i for i in actions]) if actions else "",
             "readed":0,
             "voice_audio":0
         }
@@ -248,16 +272,18 @@ if __name__ == "__main__":
     config.read(INI_FILE)
     api_key = config["CONFIGURATION"]["api_key"]
 
-    client = Groq(api_key=api_key)
+    # For local llamacpp-server
+    #service = LocalLLama(api_key=api_key)
+
+    # For Groq Cloud service ( https://console.groq.com/playground )
+    service = GroqCompletion(api_key=api_key)
 
     chat_handler = Chat(
-        llm_service=GroqCompletion(
-            client, 
-            "llama3-70b-8192"
-    ),
+        llm_service=service,
         tts_service=PlayAITTS(
-            client, 
-            "playai-tts")
+            service.client, 
+            "playai-tts"
+        )
     )
 
     iniWatcher = IniWatcher(handler=chat_handler.completion)

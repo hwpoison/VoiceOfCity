@@ -34,3 +34,11 @@ Alternative to a manual installation you can download all the files and put it i
 
 #### Known issues
 Some times ImgRedux plugin doesn't start correctly showing anything, a game restart is needed until the imgui overlay appears correctly.
+
+#### Supported action:
+According the interactions and model quality, ped can execute some of the next actions according the current conversation.
+
+- stop_talk
+- follow / unfollow player
+- attack
+- call_police
